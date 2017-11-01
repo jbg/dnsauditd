@@ -1,0 +1,10 @@
+[package]
+name = "dnsauditd"
+version = "0.1.0"
+authors = ["Jasper Bryant-Greene <jbg@rf.net.nz>"]
+
+[dependencies]
+dns-parser = "*"
+libc = "*"
+nfqueue = { git = "https://github.com/chifflier/nfqueue-rs" }
+pnet = "*"
