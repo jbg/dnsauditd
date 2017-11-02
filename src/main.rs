@@ -17,31 +17,27 @@ use pnet::packet::ipv6::Ipv6Packet;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 
-struct State {}
 
-impl State {
-    pub fn new() -> State {
-        State {}
-    }
-}
-
-fn process_name(pid: u32) -> Option<String> {
-    match File::open(Path::new("/proc").join(format!("{}", pid)).join("comm")) {
-        Ok(mut file) => {
-            let mut contents = String::new();
-            match file.read_to_string(&mut contents) {
-                Ok(_) => Some(contents.trim().to_string()),
-                Err(_) => None
-            }
+fn process_name(pid: Option<u32>) -> String {
+    match pid { 
+        Some(pid) => match File::open(Path::new("/proc").join(format!("{}", pid)).join("comm")) {
+            Ok(mut file) => {
+                let mut contents = String::new();
+                match file.read_to_string(&mut contents) {
+                    Ok(_) => contents.trim().to_string(),
+                    Err(_) => "[err]".to_string()
+                }
+            },
+            Err(_) => "[err]".to_string()
         },
-        Err(_) => None
+        None => "[?]".to_string()
     }
 }
 
 fn handle_dns(pid: Option<u32>, payload: &[u8]) {
-    let proc_name = if let Some(pid) = pid { if let Some(name) = process_name(pid) { name } else { "[err]".to_string() } } else { "[?]".to_string() };
     match dns_parser::Packet::parse(payload) {
         Ok(packet) => {
+            let proc_name = process_name(pid);
             for question in packet.questions {
                 println!("{}: {}/{:?}", proc_name, question.qname, question.qtype);
             }
@@ -80,17 +76,15 @@ fn pid_listening_on_port(port: u16, transport: &str) -> Option<u32> {
         'proc_loop: for entry in read_dir("/proc").unwrap() {
             let pid_entry = entry.unwrap();
             let mut path = pid_entry.path();
+            path.push("fd");
             if path.is_dir() {
-                path.push("fd");
-                if path.is_dir() {
-                    if let Ok(entries) = read_dir(path) {
-                        for entry in entries {
-                            let path = entry.unwrap().path();
-                            if let Ok(dest) = path.read_link() {
-                                if dest.into_os_string().into_string().unwrap() == lookup {
-                                    pid = pid_entry.file_name().into_string().unwrap().parse().ok();
-                                    break 'proc_loop;
-                                }
+                if let Ok(entries) = read_dir(path) {
+                    for entry in entries {
+                        let path = entry.unwrap().path();
+                        if let Ok(dest) = path.read_link() {
+                            if dest.into_os_string().into_string().unwrap() == lookup {
+                                pid = pid_entry.file_name().into_string().unwrap().parse().ok();
+                                break 'proc_loop;
                             }
                         }
                     }
@@ -121,6 +115,8 @@ fn handle_tcp(payload: &[u8], transport: &str) {
     }
 }
 
+struct State {}
+
 fn queue_callback(msg: &Message, _state: &mut State) {
     let payload = msg.get_payload();
     if msg.get_l3_proto() == 0x0800 {  // IPv4
@@ -145,7 +141,7 @@ fn queue_callback(msg: &Message, _state: &mut State) {
 fn main() {
     println!("dnsauditd 0.1");
 
-    let mut q = Queue::new(State::new());
+    let mut q = Queue::new(State {});
     q.open();
     q.unbind(AF_INET); // failure doesn't matter here
 
