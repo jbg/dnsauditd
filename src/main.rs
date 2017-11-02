@@ -50,12 +50,16 @@ fn handle_dns(pid: Option<u32>, payload: &[u8]) {
     }
 }
 
-fn pid_listening_on_port(port: u16, proc_net_iter: &mut Iterator<Item=Result<String, std::io::Error>>) -> Option<u32> {
+fn pid_listening_on_port(port: u16, transport: &str) -> Option<u32> {
     let mut pid: Option<u32> = None;
 
     let src_port_hex = format!("{:X}", port);
     let mut sock_inode: Option<u32> = None;
-    while let Some(line) = proc_net_iter.next() {
+
+    let file = File::open(Path::new("/proc/net").join(transport)).unwrap();
+    let reader = BufReader::new(file);
+    let mut iter = reader.lines().skip(1);
+    while let Some(line) = iter.next() {
         match line {
             Ok(line) => {
                 let parts: Vec<&str> = line.split_whitespace().collect();
@@ -82,10 +86,11 @@ fn pid_listening_on_port(port: u16, proc_net_iter: &mut Iterator<Item=Result<Str
                     if let Ok(entries) = read_dir(path) {
                         for entry in entries {
                             let path = entry.unwrap().path();
-                            let dest = path.read_link().unwrap().into_os_string().into_string().unwrap();
-                            if dest == lookup {
-                                pid = pid_entry.file_name().into_string().unwrap().parse().ok();
-                                break 'proc_loop;
+                            if let Ok(dest) = path.read_link() {
+                                if dest.into_os_string().into_string().unwrap() == lookup {
+                                    pid = pid_entry.file_name().into_string().unwrap().parse().ok();
+                                    break 'proc_loop;
+                                }
                             }
                         }
                     }
@@ -97,30 +102,22 @@ fn pid_listening_on_port(port: u16, proc_net_iter: &mut Iterator<Item=Result<Str
     pid
 }
 
-fn handle_udp(payload: &[u8], proc_net_iter: &mut Iterator<Item=Result<String, std::io::Error>>) {
+fn handle_udp(payload: &[u8], transport: &str) {
     let packet = UdpPacket::new(payload).unwrap();
     let dst_port = packet.get_destination();
     if dst_port == 53 {
-        let pid = pid_listening_on_port(packet.get_source(), proc_net_iter);
-        handle_dns(pid, packet.payload());
-    }
-    else {
-        println!("Unexpected destination port: {}", dst_port);
+        handle_dns(pid_listening_on_port(packet.get_source(), transport), packet.payload());
     }
 }
 
-fn handle_tcp(payload: &[u8], proc_net_iter: &mut Iterator<Item=Result<String, std::io::Error>>) {
+fn handle_tcp(payload: &[u8], transport: &str) {
     let packet = TcpPacket::new(payload).unwrap();
-    let port = packet.get_destination();
-    if port == 53 {
-        let pid = pid_listening_on_port(packet.get_source(), proc_net_iter);
+    let dst_port = packet.get_destination();
+    if dst_port == 53 {
         let payload = packet.payload();
         if payload.len() > 0 {
-            handle_dns(pid, &payload[2..]);
+            handle_dns(pid_listening_on_port(packet.get_source(), transport), &payload[2..]);
         }
-    }
-    else {
-        println!("Unexpected destination port: {}", port);
     }
 }
 
@@ -129,37 +126,17 @@ fn queue_callback(msg: &Message, _state: &mut State) {
     if msg.get_l3_proto() == 0x0800 {  // IPv4
         let packet = Ipv4Packet::new(payload).unwrap();
         match packet.get_next_level_protocol() {
-            Udp => {
-                let file = File::open("/proc/net/udp").unwrap();
-                let mut reader = BufReader::new(file);
-                let mut iter = reader.lines().skip(1);
-                handle_udp(packet.payload(), &mut iter)
-            },
-            Tcp => {
-                let file = File::open("/proc/net/tcp").unwrap();
-                let mut reader = BufReader::new(file);
-                let mut iter = reader.lines().skip(1);
-                handle_tcp(packet.payload(), &mut iter)
-            },
-            _ => println!("Unexpected protocol: {}", packet.get_next_level_protocol())
+            Udp => handle_udp(packet.payload(), "udp"),
+            Tcp => handle_tcp(packet.payload(), "tcp"),
+            _ => {}
         }
     }
     else {
         let packet = Ipv6Packet::new(payload).unwrap();
         match packet.get_next_header() {
-            Udp => {
-                let file = File::open("/proc/net/udp6").unwrap();
-                let mut reader = BufReader::new(file);
-                let mut iter = reader.lines().skip(1);
-                handle_udp(packet.payload(), &mut iter)
-            },
-            Tcp => {
-                let file = File::open("/proc/net/tcp6").unwrap();
-                let mut reader = BufReader::new(file);
-                let mut iter = reader.lines().skip(1);
-                handle_tcp(packet.payload(), &mut iter)
-            },
-            _ => println!("Unexpected protocol: {}", packet.get_next_header())
+            Udp => handle_udp(packet.payload(), "udp6"),
+            Tcp => handle_tcp(packet.payload(), "tcp6"),
+            _ => {}
         }
     }
     msg.set_verdict(Verdict::Accept);
